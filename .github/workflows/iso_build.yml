@@ -3,39 +3,232 @@ on:
   workflow_dispatch:
   # schedule:
   #  - cron:  '30 2 * * *'
+
+permissions:
+  contents: write
+  actions: write
+
 jobs:
   prepare-release:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
     steps:
       - 
-        uses: styfle/cancel-workflow-action@0.12.0
+        uses: styfle/cancel-workflow-action@0.13.0
         with:
-          access_token: ${{ github.token }}
+          access_token: ${{ secrets.GITHUB_TOKEN }}
       - 
         id: time
         uses: nanzm/get-time-action@v2.0
         with:
           format: 'YYYYMMDDHHmm'
+      -
+        name: Get latest versions
+        id: versions
+        run: |
+          # Get latest stable kernel version
+          LATEST_KERNEL=$(curl -s https://www.kernel.org/releases.json | jq -r '.releases[] | select(.moniker=="stable") | .version' | head -1)
+          KERNEL_MAJOR=$(echo $LATEST_KERNEL | cut -d. -f1-2 | tr -d '.')
+          echo "kernel=linux${KERNEL_MAJOR}" >> $GITHUB_OUTPUT
+          echo "Latest kernel: linux${KERNEL_MAJOR}"
+          
+          # Get latest NVIDIA driver version
+          NVIDIA_VERSION=$(curl -s "https://gfwsl.geforce.com/services_toolkit/services/com/nvidia/services/AjaxDriverService.php?func=DriverManualLookup&psid=120&pfid=916&osID=12&languageCode=1033&beta=0&isWHQL=1&dltype=-1&dch=1&upCRD=0&qnf=0&sort1=0&numberOfResults=1" | jq -r '.IDS[0].downloadInfo.Version')
+          echo "nvidia=${NVIDIA_VERSION}" >> $GITHUB_OUTPUT
+          echo "Latest NVIDIA driver: ${NVIDIA_VERSION}"
+          
+          # Get latest Ubuntu runner version
+          UBUNTU_VERSION=$(curl -s https://api.github.com/repos/actions/runner-images/releases/latest | jq -r '.tag_name' | grep -oE 'ubuntu[0-9]+' | head -1)
+          echo "ubuntu=${UBUNTU_VERSION}" >> $GITHUB_OUTPUT
+          echo "Latest Ubuntu runner: ${UBUNTU_VERSION}"
     outputs:
       release_tag: ${{ steps.time.outputs.time }}
+      kernel_version: ${{ steps.versions.outputs.kernel }}
+      nvidia_version: ${{ steps.versions.outputs.nvidia }}
+      ubuntu_version: ${{ steps.versions.outputs.ubuntu }}
+      
   build-release:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
     needs: [prepare-release]
     strategy:
       matrix:
-        EDITION: [xfce]
-        BRANCH: [unstable]
+        EDITION: [kde]
+        BRANCH: [testing]
         SCOPE: [full]
     steps:
       - 
-        uses: styfle/cancel-workflow-action@0.12.0
+        uses: styfle/cancel-workflow-action@0.13.0
         with:
-          access_token: ${{ github.token }}
+          access_token: ${{ secrets.GITHUB_TOKEN }}
       - 
         id: time
         uses: nanzm/get-time-action@v2.0
         with:
-          format: 'YY.MM'   
+          format: 'YY.MM'
+      -
+        name: Create package install script
+        run: |
+          cat > install_packages.sh << 'EOF'
+          #!/bin/bash
+          set -e
+          
+          # Package lists
+          PACMAN_PACKAGES=(
+            "acpi" "acpid" "adobe-source-sans-fonts" "amd-ucode" "ark"
+            "audiocd-kio" "b43-fwcutter" "bleachbit" "blender" "cpupower"
+            "dmraid" "dolphin-plugins" "ecryptfs-utils" "elisa" "extra-cmake-modules"
+            "filelight" "filezilla" "gimp" "glibc-locales" "gnome-themes-extra"
+            "gparted" "gwenview" "htop" "inetutils" "intel-ucode" "jupyter-notebook"
+            "kaccounts-providers" "kate" "kcalc" "kde-gtk-config" "kdeplasma-addons"
+            "kfind" "kgamma" "khelpcenter" "ksystemlog" "kwallet-pam" "kwrited"
+            "lib32-libcanberra" "lib32-mesa-utils" "libreoffice-fresh-fr" "libxnvctrl"
+            "linux-meta" "man-pages" "manjaro-alsa" "manjaro-architect" "manjaro-browser-settings"
+            "manjaro-gstreamer" "manjaro-hello" "manjaro-kde-settings" "manjaro-modem"
+            "manjaro-pipewire" "manjaro-printer" "manjaro-release" "manjaro-system"
+            "manjaro-zsh-config" "memtest86+" "memtest86+-efi" "mkinitcpio-openswap"
+            "mtpfs" "nano-syntax-highlighting" "neofetch" "networkmanager-l2tp"
+            "networkmanager-openconnect" "networkmanager-openvpn" "networkmanager-pptp"
+            "networkmanager-vpnc" "nfs-utils" "ntp" "numlockx" "okular"
+            "pamac-tray-icon-plasma" "patchelf" "plasma-browser-integration"
+            "plasma-framework5" "plasma-systemmonitor" "plasma-thunderbolt"
+            "plymouth-kcm" "plymouth-theme-manjaro" "powertop" "python-cheetah3"
+            "python-flask" "python-huggingface-hub" "python-opencv" "qbittorrent"
+            "reiserfsprogs" "sddm-kcm" "sof-firmware" "spectacle" "spyder"
+            "steam" "sysfsutils" "teamviewer" "timeshift-autosnap-manjaro"
+            "ttf-inconsolata" "ttf-indic-otf" "udiskie" "vi" "webcamoid"
+            "wget" "xf86-input-elographics" "xf86-input-evdev" "xf86-input-void"
+            "xorg-xinit" "xorg-xkill" "yakuake" "nvidia-dkms" "nvidia-utils"
+            "nvidia-settings" "nvidia-prime" "lib32-nvidia-utils" "opencl-nvidia"
+            "cuda" "libvdpau"
+          )
+          
+          AUR_PACKAGES=(
+            "WallpaperEngine_kde6" "bambustudio-bin" "brave-browser" "dolphin-emu"
+            "grub-customizer-git" "gwe" "librewolf-bin" "mspaint-xp-bin"
+            "ns-usbloader" "rstudio-desktop-bin" "yay"
+          )
+          
+          # Function to get latest package versions
+          get_latest_version() {
+            local pkg=$1
+            pacman -Si "$pkg" 2>/dev/null | grep "^Version" | cut -d: -f2 | tr -d ' ' || echo "latest"
+          }
+          
+          # Dynamic package installation with version detection
+          install_package() {
+            local pkg=$1
+            local version=$(get_latest_version "$pkg")
+            echo "Installing $pkg (version: $version)"
+            
+            if ! pacman -S --noconfirm --needed "$pkg" 2>/dev/null; then
+              echo "Warning: Failed to install $pkg with pacman, trying yay"
+              echo "$pkg" >> /tmp/failed_pacman
+              return 1
+            fi
+            return 0
+          }
+          
+          # Function to install with yay
+          install_with_yay() {
+            local packages=("$@")
+            echo "Installing with yay: ${packages[@]}"
+            
+            # Install yay if not present
+            if ! command -v yay &> /dev/null; then
+              echo "Installing yay..."
+              pacman -S --noconfirm base-devel git
+              git clone https://aur.archlinux.org/yay.git /tmp/yay
+              cd /tmp/yay
+              makepkg -si --noconfirm
+              cd /
+            fi
+            
+            for pkg in "${packages[@]}"; do
+              if ! yay -S --noconfirm --needed "$pkg" 2>/dev/null; then
+                echo "Error: Failed to install $pkg with yay"
+                echo "$pkg" >> /tmp/failed_yay
+              fi
+            done
+          }
+          
+          # Install packages with version detection
+          echo "=== Installing packages with automatic version detection ==="
+          for pkg in "${PACMAN_PACKAGES[@]}"; do
+            install_package "$pkg" || true
+          done
+          
+          echo "=== Installing AUR packages with yay ==="
+          install_with_yay "${AUR_PACKAGES[@]}"
+          
+          # Retry failed pacman packages with yay
+          if [ -f /tmp/failed_pacman ]; then
+            echo "=== Retrying failed pacman packages with yay ==="
+            while read -r pkg; do
+              install_with_yay "$pkg"
+            done < /tmp/failed_pacman
+          fi
+          
+          # Clean up
+          echo "=== Cleaning up ==="
+          pacman -Sc --noconfirm
+          yay -Sc --noconfirm 2>/dev/null || true
+          rm -rf /var/cache/pacman/pkg/*
+          rm -rf /tmp/yay
+          rm -f /tmp/failed_*
+          
+          echo "=== Package installation completed ==="
+          EOF
+          chmod +x install_packages.sh
+      -
+        name: Create cleanup script
+        run: |
+          cat > cleanup_iso.sh << 'EOF'
+          #!/bin/bash
+          # ISO cleanup and optimization
+          
+          echo "=== Cleaning ISO ==="
+          
+          # Remove unnecessary files
+          rm -rf /var/cache/pacman/pkg/*
+          rm -rf /tmp/*
+          rm -rf /var/tmp/*
+          rm -rf /var/log/*
+          rm -rf /home/*/.cache
+          rm -rf /root/.cache
+          
+          # Remove locales except en and fr
+          find /usr/share/locale -mindepth 1 -maxdepth 1 -type d ! -name 'en*' ! -name 'fr*' -exec rm -rf {} + 2>/dev/null || true
+          
+          # Remove documentation
+          rm -rf /usr/share/doc/*
+          rm -rf /usr/share/gtk-doc/*
+          rm -rf /usr/share/man/??
+          rm -rf /usr/share/man/??_*
+          
+          # Remove unnecessary kernel modules
+          find /lib/modules -name "*.ko" -path "*/kernel/drivers/staging/*" -delete 2>/dev/null || true
+          find /lib/modules -name "*.ko" -path "*/kernel/drivers/media/*" -delete 2>/dev/null || true
+          
+          # Compress kernel modules
+          find /lib/modules -name "*.ko" -exec gzip {} + 2>/dev/null || true
+          
+          # Clean package manager cache
+          ldconfig
+          
+          echo "=== ISO cleanup completed ==="
+          EOF
+          chmod +x cleanup_iso.sh
+      -
+        name: Validate build environment
+        run: |
+          echo "=== Build Environment Information ==="
+          echo "Kernel version: ${{ needs.prepare-release.outputs.kernel_version }}"
+          echo "NVIDIA version: ${{ needs.prepare-release.outputs.nvidia_version }}"
+          echo "Ubuntu version: ${{ needs.prepare-release.outputs.ubuntu_version }}"
+          echo "Release tag: ${{ needs.prepare-release.outputs.release_tag }}"
+          echo "Current time: $(date)"
+          echo "Available disk space: $(df -h /)"
+          echo "Available memory: $(free -h)"
+          echo "====================================="
       -
         name: image-build-upload
         uses: manjaro/manjaro-iso-action@main
@@ -44,12 +237,91 @@ jobs:
           branch: ${{ matrix.branch }}
           scope: ${{ matrix.scope }}
           version: ${{ steps.time.outputs.time }}
-          kernel: linux515
-          code-name: "Custom-Build"
+          kernel: ${{ needs.prepare-release.outputs.kernel_version }}
+          code-name: "RollingArch-Custom"
           release-tag: ${{ needs.prepare-release.outputs.release_tag }}
+          custom-repo: |
+            [core]
+            SigLevel = Required DatabaseOptional
+            Server = https://geo.mirror.pkgbuild.com/$repo/os/$arch
+            
+            [extra]
+            SigLevel = Required DatabaseOptional
+            Server = https://geo.mirror.pkgbuild.com/$repo/os/$arch
+            
+            [multilib]
+            SigLevel = Required DatabaseOptional
+            Server = https://geo.mirror.pkgbuild.com/$repo/os/$arch
+          extra-packages: base-devel git curl jq
+          post-install: |
+            ./install_packages.sh
+            ./cleanup_iso.sh
+          remove-packages: |
+            firefox
+            thunderbird
+            libreoffice-still
+            hexchat
+            pidgin
+            transmission-gtk
+            xfburn
+            parole
+            mousepad
+            ristretto
+            thunar-archive-plugin
+            thunar-media-tags-plugin
+            catfish
+            menulibre
+            mugshot
+            lightdm-gtk-greeter-settings
+            light-locker-settings
+            xfce4-power-manager
+            xfce4-screensaver
+            xfce4-clipman-plugin
+            xfce4-notes-plugin
+            xfce4-screenshooter
+            xfce4-taskmanager
+            xfce4-weather-plugin
+            xfce4-whiskermenu-plugin
+            xfce4-pulseaudio-plugin
+            network-manager-applet
+            nm-connection-editor
+            blueman
+            pavucontrol
+            pulseaudio
+            alsa-utils
+            manjaro-documentation-en
+            manjaro-user-guide
+      -
+        name: Post-build validation
+        if: success()
+        run: |
+          echo "=== Post-build validation ==="
+          if [ -f "manjaro-kde-*.iso" ]; then
+            echo "✅ ISO file found"
+            ls -lah manjaro-kde-*.iso
+            echo "ISO size: $(du -h manjaro-kde-*.iso)"
+          else
+            echo "❌ ISO file not found"
+            ls -la
+            exit 1
+          fi
+          echo "Build completed successfully!"
       -
         name: rollback
         if: ${{ failure() || cancelled() }}
         run: |
-          echo ${{ github.token }} | gh auth login --with-token
-          gh release delete ${{ needs.prepare-release.outputs.release_tag }} -y --repo ${{ github.repository }}
+          echo "=== Rollback process started ==="
+          echo "${{ secrets.GITHUB_TOKEN }}" | gh auth login --with-token
+          
+          # Check if release exists before trying to delete
+          if gh release view ${{ needs.prepare-release.outputs.release_tag }} --repo ${{ github.repository }} >/dev/null 2>&1; then
+            echo "Deleting release: ${{ needs.prepare-release.outputs.release_tag }}"
+            gh release delete ${{ needs.prepare-release.outputs.release_tag }} -y --repo ${{ github.repository }}
+            echo "Release deleted successfully"
+          else
+            echo "Release ${{ needs.prepare-release.outputs.release_tag }} not found, nothing to rollback"
+          fi
+          
+          echo "=== Rollback process completed ==="
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
