@@ -13,12 +13,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - 
-        uses: styfle/cancel-workflow-action
+        uses: styfle/cancel-workflow-action@0.12.1
         with:
           access_token: ${{ secrets.GITHUB_TOKEN }}
       - 
         id: time
-        uses: nanzm/get-time-action
+        uses: nanzm/get-time-action@v2.0
         with:
           format: 'YYYYMMDDHHmm'
       -
@@ -56,12 +56,12 @@ jobs:
         SCOPE: [full]
     steps:
       - 
-        uses: styfle/cancel-workflow-action
+        uses: styfle/cancel-workflow-action@0.12.1
         with:
           access_token: ${{ secrets.GITHUB_TOKEN }}
       - 
         id: time
-        uses: nanzm/get-time-action
+        uses: nanzm/get-time-action@v2.0
         with:
           format: 'YY.MM'
       -
