@@ -19,7 +19,12 @@ jobs:
       run: |
         pacman-mirrors -f 5
         pacman -Syu --noconfirm
-        pacman -S --noconfirm manjaro-tools-iso-git manjaro-iso-profiles-official
+        pacman -S --noconfirm manjaro-tools-iso-git git
+        
+    - name: Clone ISO profiles
+      run: |
+        git clone https://gitlab.manjaro.org/profiles-and-settings/iso-profiles.git /tmp/iso-profiles
+        cp -r /tmp/iso-profiles/* /usr/share/manjaro-tools/iso-profiles/
         
     - name: Configure build environment
       run: |
@@ -31,7 +36,7 @@ jobs:
         
     - name: Build Manjaro KDE Unstable ISO
       run: |
-        buildiso -p official/kde -b unstable
+        buildiso -p kde -b unstable
         
     - name: List generated files
       run: |
