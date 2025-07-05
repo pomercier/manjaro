@@ -19,15 +19,19 @@ jobs:
       run: |
         pacman-mirrors -f 5
         pacman -Syu --noconfirm
-        pacman -S --noconfirm manjaro-tools-iso-git
+        pacman -S --noconfirm manjaro-tools-iso-git manjaro-iso-profiles-official
         
     - name: Configure build environment
       run: |
         echo "PACKAGER='GitHub Actions <actions@github.com>'" >> /etc/makepkg.conf
         
+    - name: List available profiles
+      run: |
+        ls -la /usr/share/manjaro-tools/iso-profiles/
+        
     - name: Build Manjaro KDE Unstable ISO
       run: |
-        buildiso -p kde -b unstable
+        buildiso -p official/kde -b unstable
         
     - name: List generated files
       run: |
