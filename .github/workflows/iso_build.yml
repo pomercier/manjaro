@@ -1,58 +1,57 @@
-name: Build Manjaro KDE Unstable
+name: build_manjaro_kde_unstable
 
 on:
   workflow_dispatch:
-  push:
-    branches: [ main ]
+
+permissions:
+  contents: write
 
 jobs:
-  build:
+  build-iso:
     runs-on: ubuntu-latest
     container:
-      image: manjarolinux/build:latest
-    
+      image: manjaro/manjaro-tools:latest
+      options: --privileged
+
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
-      
-    - name: Update system and install dependencies
-      run: |
-        pacman-mirrors -f 5
-        pacman -Syu --noconfirm
-        pacman -S --noconfirm manjaro-tools-iso-git git
-        
-    - name: Clone ISO profiles
-      run: |
-        git clone https://gitlab.manjaro.org/profiles-and-settings/iso-profiles.git /tmp/iso-profiles
-        cp -r /tmp/iso-profiles/* /usr/share/manjaro-tools/iso-profiles/
-        
-    - name: Configure build environment
-      run: |
-        echo "PACKAGER='GitHub Actions <actions@github.com>'" >> /etc/makepkg.conf
-        
-    - name: List available profiles
-      run: |
-        ls -la /usr/share/manjaro-tools/iso-profiles/
-        
-    - name: Build Manjaro KDE Unstable ISO
-      run: |
-        buildiso -p kde -b unstable
-        
-    - name: List generated files
-      run: |
-        ls -la /var/cache/manjaro-tools/iso/
-        
-    - name: Upload ISO artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: manjaro-kde-unstable-iso
-        path: /var/cache/manjaro-tools/iso/*.iso
-        retention-days: 7
-        
-    - name: Create release (if tagged)
-      if: startsWith(github.ref, 'refs/tags/')
-      uses: softprops/action-gh-release@v1
-      with:
-        files: /var/cache/manjaro-tools/iso/*.iso
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies (optional override)
+        run: |
+          pacman -Syu --noconfirm
+          pacman -S --needed --noconfirm git unzip p7zip
+
+      - name: Configure build environment
+        run: |
+          mkdir -p ~/.config
+          echo -e "[buildiso]\nprofile_dir = /profile" > ~/.config/manjaro-tools.conf
+
+      - name: Copy KDE unstable profile
+        run: |
+          mkdir -p /profile
+          cp -r /usr/share/manjaro-tools/buildiso/profiles/kde /profile/kde
+
+      - name: Patch profile for unstable branch
+        run: |
+          sed -i 's@^branch=.*@branch=unstable@' /profile/kde/profile.conf
+
+      - name: Build ISO (split mode)
+        run: |
+          buildiso -p kde -b unstable -x
+
+      - name: Compress output files (<2GB ZIP)
+        run: |
+          mkdir -p release_files
+          cp -a /var/cache/manjaro-tools/iso/unstable/*/*.iso ./release_files/
+          cd release_files
+          7z a manjaro-kde-unstable.zip *
+
+      - name: Upload release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: "unstable-kde-${{ github.run_number }}"
+          name: "Manjaro KDE Unstable Build ${{ github.run_number }}"
+          files: release_files/manjaro-kde-unstable.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
