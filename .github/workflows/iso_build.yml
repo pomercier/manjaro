@@ -1,52 +1,61 @@
-name: Build Manjaro KDE Unstable ISO
-
+name: iso_build
 on:
   workflow_dispatch:
-
-permissions:
-  contents: write
+  # remove if you don't want to build on a schedule
+  schedule:
+    - cron:  '30 6 1 * *'
+  # remove if you don't want to build when commits are pushed to you main/master branch
+  push:
+    branches:
+      - master
+      - main
 
 jobs:
-  build-iso:
-    runs-on: ubuntu-latest
-
+  prepare-release:
+    runs-on: ubuntu-20.04
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Install dependencies
-        run: |
-          sudo pacman-mirrors --fasttrack && sudo pacman -Syy
-          sudo pacman -S --needed --noconfirm manjaro-tools git p7zip
-
-      - name: Prepare profile directory
-        run: |
-          mkdir -p ~/.config
-          echo -e "[buildiso]\nprofile_dir = /home/runner/work/_temp/profile" > ~/.config/manjaro-tools.conf
-          mkdir -p /home/runner/work/_temp/profile
-          sudo cp -r /usr/share/manjaro-tools/buildiso/profiles/kde /home/runner/work/_temp/profile/kde
-          sudo chown -R runner:runner /home/runner/work/_temp/profile
-
-      - name: Patch profile for unstable branch
-        run: |
-          sed -i 's/^branch=.*/branch=unstable/' /home/runner/work/_temp/profile/kde/profile.conf
-
-      - name: Build ISO
-        run: |
-          buildiso -p kde -b unstable -x
-
-      - name: Compress ISO directory (limit <2GB)
-        run: |
-          mkdir -p release
-          cp -v /var/cache/manjaro-tools/iso/unstable/*/*.iso release/
-          cd release
-          7z a manjaro-kde-unstable.zip *.iso
-
-      - name: Upload ISO to GitHub Release
-        uses: softprops/action-gh-release@v2
+      # cancel already running instances of the same action on the currently working on branch
+      - uses: styfle/cancel-workflow-action@0.9.0
         with:
-          tag_name: "unstable-kde-${{ github.run_number }}"
-          name: "Manjaro KDE Unstable ${{ github.run_number }}"
-          files: release/manjaro-kde-unstable.zip
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          access_token: ${{ github.token }}
+      - id: time
+        uses: nanzm/get-time-action@v1.1
+        with:
+          format: 'YYYYMMDDHHmm'
+    outputs:
+      # generate a common tag to be used in all elements of the matrix strategy
+      release_tag: ${{ steps.time.outputs.time }}      
+  release:
+    runs-on: ubuntu-20.04
+    needs: prepare-release    
+    strategy:
+      matrix:
+        ##### EDIT ME #####      
+        EDITION: [kde]
+        BRANCH: [testing]
+        SCOPE: [full]
+        ###################
+    steps:
+      # cancel already running instances of the same action on the currently working on branch
+      - uses: styfle/cancel-workflow-action@0.9.0
+        with:
+          access_token: ${{ github.token }}
+      - id: image-build
+        uses: manjaro/manjaro-iso-action@main
+        with:
+          edition: ${{ matrix.edition }}
+          branch: ${{ matrix.branch }}
+          scope: ${{ matrix.scope }}
+          version: "21.0"
+          kernel: linux510
+          code-name: "Ornara"
+          # providing a release-tag allows for github releases
+          release-tag: ${{ needs.prepare-release.outputs.release_tag }}
+      # delete the github release in case of cancellation or failure
+      # refer to .github/workflows/cleanup-test-release.yml for rollback strategies concerning the other distribution channels
+      - name: rollback github release
+        if: ${{ failure() || cancelled() }}
+        run: |
+          echo ${{ github.token }} | gh auth login --with-token
+          gh release delete ${{ needs.prepare-release.outputs.release_tag }} -y --repo ${{ github.repository }}
+          git push --delete origin ${{ needs.prepare-release.outputs.release_tag }}
